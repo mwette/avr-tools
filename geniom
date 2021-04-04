@@ -1,0 +1,69 @@
+#!/usr/bin/python3
+# geniom
+
+# This program is free software: you can redistribute it and/or
+# modify it under the terms of the GNU General Public License as
+# published by the Free Software Foundation, either version 3 of
+# the License, or (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# See the GNU General Public License at <https://www.gnu.org/licenses/>.
+
+
+from lxml import etree
+
+def doit(xml_name, h_name):
+    f0 = open(xml_name, "rb")
+    tree = etree.parse(f0)
+    f0.close()
+    f1 = open(h_name, "w")
+    #
+    # <avr-tools-device-file <variants ...
+    variants = tree.find('variants')
+    devices = tree.find('devices')
+    modules = tree.find('modules')
+    pinouts = tree.find('pinouts')
+    #
+    device = devices[0]
+    d_name = device.attrib["name"]
+    print("device:", d_name)
+    #
+    perifs = device.find('peripherals')
+    for mod in perifs:
+        m_name = mod.attrib["name"]
+        for inst in mod:
+            i_name = inst.attrib["name"]
+            print(" ", i_name)
+    #
+    for mod in modules:
+        m_name = mod.attrib["name"]
+        rgrps = mod.xpath("register-group")
+        for rgrp in rgrps:
+            rg_name = rgrp.attrib["name"]
+            print("\n/* === ", rg_name, "=== */")
+            regs = rgrp.xpath("register")
+            for reg in regs:
+                reg_name = reg.attrib["name"]
+                reg_offset = reg.attrib["offset"]
+                reg_caption = reg.attrib["caption"]
+                print("/*", reg_caption, " */")
+                print("#define", reg_name, reg_offset)
+                flds = reg.xpath("bitfield")
+                for fld in flds:
+                    f_name = fld.attrib["name"]
+                    f_mask = fld.attrib["mask"]
+                    f_caption = fld.attrib["caption"]
+                    print("/*", f_caption, "*/")
+                    print("#define", f_name, f_mask)
+        
+
+import sys
+
+if __name__ == '__main__':
+    doit(sys.argv[1], "z.h")
+
+# --- last line ---

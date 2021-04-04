@@ -1,0 +1,286 @@
+#!/usr/bin/python3
+# -*- python -*-
+#
+# Generate .xlsx (or emacs .org) file from .atdf file.
+#
+# example usage:
+#   $ ./atdf2xlsx ATmega4809.atdf  
+# generates ATmega4809.xlsx
+#
+# v210213a
+
+# Copyright (C) 2020-2021 Matthew R. Wette
+
+# This program is free software: you can redistribute it and/or
+# modify it under the terms of the GNU General Public License as
+# published by the Free Software Foundation, either version 3 of
+# the License, or (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# GNU General Public License: https://www.gnu.org/licenses/
+
+# TODO:
+#  1. Instead of using TCBn for multiple TCBs use TCB2 for 3 peripherals.
+
+# avr-tools-device-file layout:
+#  variants
+#  devices
+#   peripherals
+#    module w/ name (e.g., "AC")
+#     instance w/ name (e.g., "AC0")
+#      register-group name (e.g., "AC0") and name-in-module (e.g., "AC")
+#  modules - the other stuff
+#   module w/ name (e.g., "AC")
+#    register-group w/ name (e.g., "AC")
+#     register w/ name (e.g., "CTRLA") w/ caption
+#      bitfield w/ name (e.g., "DATA") w/ caption
+#    value-group w/ name (e.g., "AC_HYSMODE") w/ caption
+#     value w/ name w/ caption
+#  pinouts
+
+import sys, os
+import pdb
+from lxml import etree
+from xlsxwriter import Workbook
+
+lev = True
+ol1_opts = { 'level': 1, 'hidden': True }
+ol2_opts = { 'level': 2, 'hidden': True }
+
+wkbk = False
+om_f = False
+pl_f = False
+
+# =========================================
+
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("files", nargs="+")
+parser.add_argument("-X", "--no-excel", default=False,
+                    action="store_true", help="don't generate excel file")
+parser.add_argument("-g", "--org-mode", default=False,
+                    action="store_true", help="generate org-mode file")
+parser.add_argument("-p", "--plain-text", default=False,
+                    action="store_true", help="generate plain text file")
+parser.add_argument("-o", "--output", help="output basename (no extension)")
+
+# =========================================
+
+def mask_bits(mask):
+    v = int(mask, 16); m = 1; n = 0
+    for i in range(8):
+        if (v & m): n += 1
+        m = m << 1
+        pass
+    return n
+
+def add_datasheet(atdfname):
+    global wkbk, om_f, pl_f
+    
+    f0 = open(atdfname, "rb")
+    tree = etree.parse(f0)
+    f0.close
+
+    devices = tree.find('devices')
+    modules = tree.find('modules')
+    
+    dev = devices[0]
+    d_name = dev.attrib["name"]
+    perifs = dev.find("peripherals")
+    intrs = dev.find("interrupts")
+
+    if wkbk:
+        wksh = wkbk.add_worksheet(d_name)
+        wksh.set_column(0, 0, 4)
+        wksh.set_column(1, 1, 2)
+        wksh.set_column(2, 2, 2)
+        wksh.set_column(3, 3, 40)
+        wksh.set_column(4, 4, 2)
+        wksh.set_column(5, 5, 60)
+    else:
+        wksh = False
+
+    if om_f: om_f.write("* %s\n" % d_name)
+    if pl_f: pl_f.write("= %s\n" % d_name)
+
+    if wksh:
+        wksh.write_string(0, 0, "<+  click on [+] to expand (the item above)")
+    row = 1
+
+    for mod in perifs:
+        insts = mod.xpath("instance")
+        rgrp = insts[0].find("register-group")
+        if rgrp is None: continue # DA series does this
+        p_prtn = rgrp.attrib["name"]
+        if len(insts) > 1: p_prtn = p_prtn[:-1] + 'n'
+        # todo: if prtn[-1] == '0': 'n' elif == 'A": 'a' else: error
+        p_prtx = p_prtn + "."
+        p_prt_ = p_prtn + "_"
+        p_modn = rgrp.attrib["name-in-module"]
+        p_mod_ = p_modn + '_'
+
+        if om_f: om_f.write("** %s\n" % p_prtn)
+        if pl_f: pl_f.write("** %s\n" % p_prtn)
+        if wksh: wksh.write_string(row, 0, p_prtn)
+        row += 1
+
+        modl = modules.find("module[@name='%s']" % p_modn)
+        rgrps = modl.xpath("register-group")
+        vgrps = modl.xpath("value-group")
+        #
+        vgrpd = {}
+        for vgrp in vgrps:
+            name = vgrp.attrib["name"]
+            vgrpd[name] = vgrp
+            pass
+
+        # a bit kludgy here w/ the unions
+        nrgrp = len(rgrps)
+        rgrpd = {}
+        for rgrp in rgrps:
+            if 'union-tag' in rgrp.attrib:
+                rrgrps = rgrp.xpath("register-group")
+                for rrgrp in rrgrps:
+                    rgrpd[rrgrp.attrib['name-in-module']] = rrgrp
+                    pass
+                pass
+            pass
+        #
+        for rgrp in rgrps:
+            if 'union-tag' in rgrp.attrib: continue
+            if nrgrp > 1:
+                rg_name = rgrp.attrib["name"] 
+                rg_nx = rgrpd[rg_name].attrib['name'] + "."
+                rg_n_ = rgrpd[rg_name].attrib['name'] + "_"
+            else:
+                rg_nx = ""
+                rg_n_ = ""
+                pass
+            for reg in rgrp:
+                vgrp = reg.find("value-group")
+                r_name = reg.attrib["name"]
+                r_capt = reg.attrib["caption"]
+
+                text = p_prtx + rg_nx + r_name
+                if om_f: om_f.write("*** %s: %s\n" % (text, r_capt))
+                if pl_f: pl_f.write("    %-30s  %s\n" % (text, r_capt))
+                if wksh:
+                    wksh.write_string(row, 1, text)
+                    wksh.write_string(row, 4, r_capt)
+                    if lev: wksh.set_row(row, options=ol1_opts)
+                row += 1
+
+                bitfields = reg.xpath("bitfield")
+                for bf in bitfields:
+                    bf_name = bf.attrib["name"]
+                    bf_capt = bf.attrib["caption"]
+                    bf_mask = bf.attrib["mask"]
+                    nm_bits = mask_bits(bf_mask)
+                    key = p_mod_ + rg_n_ + bf_name
+                    if key in vgrpd:
+                        text = key
+                        capt = vgrpd[key].attrib["caption"]
+                        if om_f: om_f.write("**** %-29s  %s\n" % (text, bf_capt))
+                        if pl_f: pl_f.write("     %-29s  %s\n" % (text, bf_capt))
+                        if wksh:
+                            wksh.write_string(row, 2, text)
+                            wksh.write_string(row, 5, " ")
+                            if lev: wksh.set_row(row, options=ol1_opts)
+                        row += 1
+                        for val in vgrpd[key]:
+                            n = val.attrib["name"]
+                            ct = val.attrib["caption"]
+                            tx = key + "_" + n + "_gc"
+                            if om_f: om_f.write("     %-28s   %s\n" % (tx, ct))
+                            if pl_f: pl_f.write("     %-28s   %s\n" % (tx, ct))
+                            if wksh:
+                                wksh.write_string(row, 3, tx)
+                                wksh.write_string(row, 5, ct)
+                                if lev: wksh.set_row(row, options=ol2_opts)
+                            row += 1
+                            pass
+                        pass
+                    elif nm_bits > 1:
+                        text = p_mod_ + bf_name + "_gm"
+                        if om_f: om_f.write("**** %-29s  %s\n" % (text, bf_capt))
+                        if pl_f: pl_f.write("     %-29s  %s\n" % (text, bf_capt))
+                        if wksh:
+                            wksh.write_string(row, 2, text)
+                            wksh.write_string(row, 5, bf_capt)
+                            if lev: wksh.set_row(row, options=ol1_opts)
+                        row += 1
+                        for i in range(nm_bits):
+                            tx = p_mod_ + rg_n_ + bf_name + str(i) + "_bm"
+                            ct = bf_capt + ", bit %d" % i
+                            if om_f: om_f.write("     %-28s   %s\n" % (tx, ct))
+                            if pl_f: pl_f.write("     %-28s   %s\n" % (tx, ct))
+                            if wksh:
+                                wksh.write_string(row, 3, tx)
+                                wksh.write_string(row, 5, ct)
+                                if lev: wksh.set_row(row, options=ol2_opts)
+                            row += 1
+                            pass
+                        pass
+                    else:
+                        text = p_mod_ + rg_n_ + bf_name + "_bm"
+                        if om_f: om_f.write("**** %-29s  %s\n" % (text, bf_capt))
+                        if pl_f: pl_f.write("     %-29s  %s\n" % (text, bf_capt))
+                        if wksh:
+                            wksh.write_string(row, 2, text)
+                            wksh.write_string(row, 5, bf_capt)
+                            if lev: wksh.set_row(row, options=ol1_opts)
+                        row += 1
+                        pass
+                    pass
+                pass
+            pass
+
+        # interrupts
+        m_isrs = intrs.xpath("interrupt[@module-instance='%s']" %
+                             p_prtn.replace('n', '0'))
+        #if p_modn == 'RTC': pdb.set_trace()
+        if len(m_isrs) > 0:
+            if om_f: om_f.write("*** interrupt vectors\n")
+            if pl_f: pl_f.write("    interrupt vectors\n")
+            if wksh:
+                wksh.write_string(row, 1, "interrupt vectors")
+                if lev: wksh.set_row(row, options=ol1_opts)
+            row += 1
+        for isr in m_isrs:
+            text = p_prt_ + isr.attrib['name'] + "_vect"
+            if om_f: om_f.write("    + %-28s\n" % text)
+            if pl_f: pl_f.write("      %-28s\n" % text)
+            if wksh:
+                wksh.write_string(row, 2, text)
+                if lev: wksh.set_row(row, options=ol1_opts)
+            row += 1
+            pass
+
+        pass
+
+def main(args):
+    global om_f, pl_f
+
+    atdfname = os.path.basename(args.files[0])
+    outfbase,ext = os.path.splitext(atdfname)
+    if args.output : outfbase = args.output
+    wkbk = Workbook(outfbase + ".xlsx") if not args.no_excel else False
+    om_f = open(outfbase + ".org", "w") if args.org_mode else False
+    pl_f = open(outfbase + ".txt", "w") if args.plain_text else False
+
+    for atdfname in args.files: add_datasheet(atdfname)
+    
+    if om_f: om_f.close()
+    if pl_f: pl_f.close()
+    if wkbk: wkbk.close()
+
+if __name__ == '__main__':
+    args = parser.parse_args(sys.argv[1:])
+    main(args)
+
+# --- last line ---

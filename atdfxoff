@@ -1,0 +1,191 @@
+#!/usr/bin/python3
+# -*- python -*-
+#
+# Extract periferal offsets
+#
+# example usage:
+#   $ ./atdfxmod ATmega4809.atdf
+# generates mega4809_offs.h
+#
+# v201111a
+
+# Copyright (C) 2020 Matthew R. Wette
+
+# This program is free software: you can redistribute it and/or
+# modify it under the terms of the GNU General Public License as
+# published by the Free Software Foundation, either version 3 of
+# the License, or (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# GNU General Public License: https://www.gnu.org/licenses/
+
+import sys, os
+import pdb
+from lxml import etree
+
+# =========================================
+
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("atdf")
+parser.add_argument("-p", "--prefix", default="avr0_")
+
+# =========================================
+
+def mask_bits(mask):
+    v = int(mask, 16); m = 1; n = 0
+    for i in range(8):
+        if (v & m): n += 1
+        m = m << 1
+        pass
+    return n
+
+def mask_bitixs(mask):
+    vals = []
+    v = int(mask, 16); m = 1; n = 0
+    for i in range(8):
+        if (v & m): vals.append(i)
+        m = m << 1
+        pass
+    return vals
+
+def rgrp_sort(rgrp):
+    regd = {}
+    for reg in rgrp:
+        name = reg.attrib['name']
+        regd[name] = reg.attrib
+        pass
+    regl = list(regd.keys())
+    regl.sort(key=lambda e: int(regd[e]['offset'], 16))
+    return regl, regd
+
+#  modules - the other stuff
+#   module w/ name (e.g., "AC")
+#    register-group w/ name (e.g., "AC")
+#     register w/ name (e.g., "CTRLA") w/ caption
+#      bitfield w/ name (e.g., "DATA") w/ caption
+#    value-group w/ name (e.g., "AC_HYSMODE") w/ caption
+#     value w/ name w/ caption
+
+
+sx = 39*" "
+
+def dwrite(f1, name, val, capn=""):
+    stng = "#define %s %s" % (name, val)
+    f1.write(stng)
+    f1.write(" ")
+    ix1 = min(len(stng), 39)
+    ix2 = min(72 - len(capn), 39)
+    if ix1 < ix2: f1.write(sx[ix1:ix2])
+    f1.write("/* %s */\n" % capn)
+
+def ewrite(f1, stng, capn=""):
+    f1.write(stng)
+    f1.write(" ")
+    ix1 = min(len(stng), 39)
+    ix2 = min(73 - len(capn), 39)
+    if ix1 < ix2: f1.write(sx[ix1:ix2])
+    f1.write("/* %s */\n" % capn)
+    pass
+
+#   peripherals
+#    module
+#     instance : name "TCB1"
+#      register-group : name "TCB1" offset "0x0A90"
+
+def get_offsets(atdf, opts):
+    f0 = open(atdf, "rb")
+    tree = etree.parse(f0)
+    f0.close()
+
+    f1 = open("xxx", "w")
+
+    path = "devices/device/peripherals/module/instance/register-group"
+    rgrps = tree.xpath(path)
+    rgrpl = []
+    rgrpd = {}
+    for rgrp in rgrps:
+        inst = rgrp.attrib['name']
+        offs = int(rgrp.attrib['offset'], 16)
+        tipe = rgrp.attrib['name-in-module'].lower()
+        rgrpl.append(inst)
+        rgrpd[inst] = { 'inst': inst, 'offs': offs, 'tipe': tipe }
+        pass
+    rgrps = sorted(rgrpl, key=lambda n: rgrpd[n]['offs'])
+
+    if False:
+        for n in rgrps:
+            inst = rgrpd[n]['inst']
+            offs = rgrpd[n]['offs']
+            f1.write("#define %s_OFFSET\t0x%04x\n" % (inst, offs))
+            pass
+        f1.write("\n\n")
+        pass
+
+    if False:
+        for n in rgrps:
+            inst = rgrpd[n]['inst']
+            offs = rgrpd[n]['offs']
+            tipe = rgrpd[n]['tipe']
+            f1.write("  chip->%s.reg = (%s_reg_t *)&chip->data[0x%04x];\n" %
+                     (inst.lower(), tipe, offs))
+            pass
+        f1.write("\n\n")
+        pass
+
+    if True:
+        first = True
+        for n in rgrps:
+            inst = rgrpd[n]['inst'].lower()
+            offs = rgrpd[n]['offs']
+            tipe = rgrpd[n]['tipe'].lower()
+            expr = "(0x%04x <= offs) && (offs < (0x%04x + sizeof(%s_reg_t)))" % \
+                   (offs, offs, tipe)
+            if first:
+                f1.write("  if (%s) {\n" % expr)
+                first = False
+            else:
+                f1.write("  } else if (%s) {\n" % expr)
+                pass
+            f1.write("    val = %s_rd(&chip->%s, offs-0x%04x);\n" %
+                     (tipe, inst, offs))
+            tick = True
+            pass
+        f1.write("  } else {\n\n  }\n")
+        f1.write("\n\n")
+        first = True
+        for n in rgrps:
+            inst = rgrpd[n]['inst'].lower()
+            offs = rgrpd[n]['offs']
+            tipe = rgrpd[n]['tipe'].lower()
+            expr = "(0x%04x <= offs) && (offs < (0x%04x + sizeof(%s_reg_t)))" % \
+                   (offs, offs, tipe)
+            if first:
+                f1.write("  if (%s) {\n" % expr)
+                first = False
+            else:
+                f1.write("  } else if (%s) {\n" % expr)
+                pass
+            f1.write("    %s_wr(&chip->%s, offs-0x%04x, val);\n" %
+                     (tipe, inst, offs))
+            pass
+        f1.write("  } else {\n\n  }\n")
+        f1.write("\n\n")
+        pass
+
+    f1.close()
+    pass
+    
+def main(argv):
+    opts = parser.parse_args(argv[1:])
+    get_offsets(opts.atdf, opts)
+
+if __name__ == '__main__':
+    main(sys.argv)
+
+# --- last line ---

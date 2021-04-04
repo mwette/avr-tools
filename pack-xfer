@@ -1,0 +1,145 @@
+#!/bin/sh
+#
+# pack-xfer -
+
+# Copyright (C) 2019-2020 Matthew R. Wette
+
+# This program is free software: you can redistribute it and/or
+# modify it under the terms of the GNU General Public License as
+# published by the Free Software Foundation, either version 3 of
+# the License, or (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# See the GNU General Public License at <https://www.gnu.org/licenses/>.
+
+#
+# Transfer files from microchip dev-pack to local install.
+# This will tweak includes to allow use with assembler and tweak dev-spec
+# files to be able to find the crt and lib files.
+# What about includes?
+#
+# usage:
+#   $ cd /var/tmp/xxx/pack-dist-dir
+#   $ ./pack-xfer /opt/local/avr/packs/tiny-1.0.0
+
+# gen_iom is avr-lib3/devtools/gen-ioheader-atdf-avr8x.py
+# It generates iom1234.h files from atdf files with hooks
+# for allowing use in assembly code.  That's good news.
+gen_iom=/opt/local/bin/gen-iom
+
+# Define source and target directories.
+if [ $# -eq 2 ]; then
+    pack_dir=$1
+    dest_dir=$2
+elif [ $# -eq 1 ]; then
+    pack_dir=`pwd`
+    dest_dir=$1
+else
+    echo 'usage: pack-xfer <src-dir> <dest-dir>'
+    echo '       pack-xfer <dest-dir>'
+    exit 1
+fi
+if [ ! -d $pack_dir/gcc/dev ]; then
+    echo "*** bad pack src: $pack_dir"
+    exit 1
+fi
+
+# Generate list of devices.
+devs_dir=$pack_dir/gcc/dev
+devs=`(cd $devs_dir; ls)`
+
+# Start building destination.
+mkdir -p $dest_dir
+
+find_atdf_file () {
+  aname=$1
+  if [ -f $pack_dir/atdf/${aname}.atdf ]; then
+    echo $pack_dir/atdf/${aname}.atdf
+    return 0
+  fi
+  xname=`echo $aname | sed -e 's/REV/rev/'` 
+  if [ -f $pack_dir/atdf/${xname}.atdf ]; then
+    echo $pack_dir/atdf/${xname}.atdf
+    return 0;
+  fi
+  echo "-"
+}
+
+# Install ATDF files.
+mkdir -p $dest_dir/atdf
+(cd $pack_dir/atdf; tar cf - . ) | (cd $dest_dir/atdf; tar xf -)
+
+# Install include files.
+mkdir -p $dest_dir/include
+(cd $pack_dir/include; tar cf - . ) | (cd $dest_dir/include; tar xf -)
+for dev in $devs; do
+  file=$devs_dir/$dev/device-specs/specs-$dev
+  aname=`awk '/D__AVR_DEV_LIB_NAME/ {
+	 if ($1 != "#") { sub("-D__AVR_","",$1); sub("__","",$1); print $1 }
+	 }' $file`
+  lname=`awk '/D__AVR_DEV_LIB_NAME/ { 
+	 if ($1 != "#") { split($3,f,"="); print f[2] }}' $file`
+  atdf_file=`find_atdf_file $aname`
+  if [ -f $atdf_file ]; then
+    $gen_iom $atdf_file > /tmp/io${lname}.h;
+    if [ $? -eq 0 ]; then 
+      mv /tmp/io${lname}.h $dest_dir/include/avr/io${lname}.h
+    fi
+    rm -f /tmp/io${lname}.h
+  else
+    echo "not found: ${aname}.atdf"
+  fi
+done
+
+
+# Install device-spec files.
+tweak_spec () {
+    file=$1
+    dev=$2
+    mcu=`sed -n -e 's/\t-mmcu=//p' $file`
+    ed -s $file >/dev/null << EOF
+/\*avrlibc_startfile:/
+i
+*asm_gccisr:
+	%{!mno-gas-isr-prologues: -mgcc-isr}
+
+%rename link prev_link
+
+*link:
+	%(prev_link) -L$dest_dir/lib/$mcu -L$dest_dir/lib 
+
+.
++2
+d
+i
+	$dest_dir/lib/$mcu/crt$dev.o%s
+.
+wq
+EOF
+}
+
+mkdir -p $dest_dir/device-specs
+for dev in $devs; do
+  file=$devs_dir/$dev/device-specs/specs-$dev
+  dest=$dest_dir/device-specs/specs-$dev
+  cp $file $dest
+  tweak_spec $dest $dev
+done
+
+
+# Install lib files.
+mkdir -p $dest_dir/lib
+for dev in $devs; do
+  for dir in `ls $devs_dir/$dev`; do
+    case $dir in 
+      device-specs) ;;
+      *) (cd $devs_dir/$dev; tar cf - $dir) | (cd $dest_dir/lib; tar xf -) ;;
+    esac
+  done
+done
+
+# --- last line ---

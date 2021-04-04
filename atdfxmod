@@ -1,0 +1,374 @@
+#!/usr/bin/python3
+# -*- python -*-
+#
+# Extract periferal module into files for simulation model
+#
+# example usage:
+#   $ ./atdfxmod ATmega4809.atdf TCB
+# generates avr0_tcb.h avr0_tcb.c
+# where "avr0_" is the default prefix
+#
+# v201116a
+
+# Copyright (C) 2020 Matthew R. Wette
+
+# This program is free software: you can redistribute it and/or
+# modify it under the terms of the GNU General Public License as
+# published by the Free Software Foundation, either version 3 of
+# the License, or (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# GNU General Public License: https://www.gnu.org/licenses/
+
+import sys, os
+import pdb
+from lxml import etree
+
+# =========================================
+
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("atdf")
+parser.add_argument("module")
+parser.add_argument("-p", "--prefix", default="avr0_")
+
+# =========================================
+
+def mask_bits(mask):
+    v = int(mask, 16); m = 1; n = 0
+    for i in range(8):
+        if (v & m): n += 1
+        m = m << 1
+        pass
+    return n
+
+def mask_bitixs(mask):
+    vals = []
+    v = int(mask, 16); m = 1; n = 0
+    for i in range(8):
+        if (v & m): vals.append(i)
+        m = m << 1
+        pass
+    return vals
+
+def rgrp_sort(rgrp):
+    regd = {}
+    for reg in rgrp:
+        name = reg.attrib['name']
+        regd[name] = reg.attrib
+        pass
+    regl = list(regd.keys())
+    regl.sort(key=lambda e: int(regd[e]['offset'], 16))
+    return regl, regd
+
+#  modules - the other stuff
+#   module w/ name (e.g., "AC")
+#    register-group w/ name (e.g., "AC")
+#     register w/ name (e.g., "CTRLA") w/ caption
+#      bitfield w/ name (e.g., "DATA") w/ caption
+#    value-group w/ name (e.g., "AC_HYSMODE") w/ caption
+#     value w/ name w/ caption
+
+sx = 39*" "
+
+def dwrite(f1, name, val, capn=""):
+    stng = "#define %s %s" % (name, val)
+    f1.write(stng)
+    f1.write(" ")
+    ix1 = min(len(stng), 39)
+    ix2 = min(72 - len(capn), 39)
+    if ix1 < ix2: f1.write(sx[ix1:ix2])
+    f1.write("/* %s */\n" % capn)
+
+def ewrite(f1, ns, stng, capn=""):
+    f1.write(sx[:ns])
+    f1.write(stng)
+    f1.write(" ")
+    ix1 = min(len(stng), 39)
+    ix2 = min(72 - len(capn), 39)
+    if ix1 < ix2: f1.write(sx[ix1:ix2])
+    f1.write("/* %s */\n" % capn)
+
+def fwrite(f1, ns, stng):
+    f1.write(sx[:ns])
+    f1.write(stng)
+    f1.write("\n")
+
+def get_module(atdf, module, opts):
+    f0 = open(atdf, "rb")
+    tree = etree.parse(f0)
+    f0.close()
+
+    mu = module
+    ml = module.lower()
+    p_mod_ = mu + "_"
+
+    mod = tree.find("modules/module[@name='%s']" % module)
+    rgrps = mod.xpath("register-group")
+    vgrps = mod.xpath("value-group")
+    ngrp = len(rgrps)
+
+    f1 = open(opts.prefix + module.lower() + ".h", "w")
+    f1.write("/* %s - %s */\n" % (mod.attrib['name'], mod.attrib['caption']))
+    f1.write("#ifndef PER_%s_H__\n" % module);
+    f1.write("#define PER_%s_H__\n" % module);
+    f1.write("\n");
+    f1.write("#include <stdint.h>\n");
+    f1.write("\n");
+
+    vgrpd = {}
+    vgrpl = []
+    for vgrp in vgrps:
+        name = vgrp.attrib["name"]
+        vgrpl.append(name)
+        vgrpd[name] = vgrp
+        pass
+
+    nrgrp = len(rgrps)
+    rgrpd = {}
+    for rgrp in rgrps:
+        if 'union-tag' in rgrp.attrib:
+            rrgrps = rgrp.xpath("register-group")
+            for rrgrp in rrgrps:
+                rgrpd[rrgrp.attrib['name-in-module']] = rrgrp
+                pass
+            pass
+        pass
+
+    for rgrp in rgrps:
+        if 'union-tag' in rgrp.attrib: continue
+        regl, regd = rgrp_sort(rgrp)
+        f1.write("typedef struct {\n")
+        addr = 0
+        for rn in regl:
+            attr = regd[rn]
+            size = int(attr['size'])
+            offset = int(attr['offset'], 16)
+            while addr < offset:
+                ewrite(f1, 0, "  uint8_t rez%02X;" % addr, "reserved")
+                addr += 1
+            if size == 1:
+                ewrite(f1, 0, "  uint8_t %s;" % attr['name'], attr['caption'])
+            elif size == 2:
+                ewrite(f1, 0, "  reg16_t_(%s);" % attr['name'], attr['caption'])
+            else:
+                raise Exception("hmmm")
+            addr += size
+            pass
+        f1.write("} %s_reg_t;\n" % rgrp.attrib['name'].lower())
+        f1.write("\n")
+        pass
+
+    for rgrp in rgrps:
+        if not 'union-tag' in rgrp.attrib: continue
+        f1.write("typedef union {\n")
+        for elt in rgrp:        # register-group
+            attr = elt.attrib
+            ewrite(f1,0, "  %s_reg_t %s;" %
+                   (attr['name-in-module'].lower(), attr['name']))
+            pass
+        f1.write("} %s_reg_t;\n" % rgrp.attrib['name'].lower())
+        f1.write("\n")
+        pass
+
+    f1.write("\n")
+    f1.write("#endif\n/* --- last line --- */\n")
+    f1.close()
+
+    f1 = open(opts.prefix + module.lower() + ".c", "w")
+    attr = mod.attrib
+    f1.write("/* %s - %s */\n" % (attr['name'], attr['caption']))
+    f1.write("\n");
+
+    for rgrp in rgrps:
+        if 'union-tag' in rgrp.attrib: continue
+        if nrgrp > 1:
+            rg_name = rgrp.attrib["name"] 
+            rg_nx = rgrpd[rg_name].attrib['name'] + "."
+            rg_n_ = rgrpd[rg_name].attrib['name'] + "_"
+        else:
+            rg_nx = ""
+            rg_n_ = ""
+            pass
+        for reg in rgrp:
+            vgrp = reg.find("value-group")
+            r_name = reg.attrib["name"]
+            r_capt = reg.attrib["caption"]
+
+            bitfields = reg.xpath("bitfield")
+            for bf in bitfields:
+                attr = bf.attrib
+                bf_name = attr["name"]
+                bf_capt = attr["caption"]
+                bf_mask = attr["mask"]
+                bf_vals = attr.get("values", False)
+                nm_bits = mask_bitixs(bf_mask)
+                nm_nbit = len(nm_bits)
+                bc = bf_capt
+                bm = bf_mask
+                key = p_mod_ + rg_n_ + bf_name
+                #if bf_name == 'PDIV': pdb.set_trace()
+                if bf_vals in vgrpd:
+                    vgrpd[bf_vals].attrib['shift'] = str(nm_bits[0])
+                if False: #key in vgrpd:
+                    text = key
+                    capt = vgrpd[key].attrib["caption"]
+                    for val in vgrpd[key]:
+                        n = val.attrib["name"]
+                        ct = val.attrib["caption"]
+                        tx = key + "_" + n + "_gc"
+                        dwrite(f1, tx, bm, ct)
+                        pass
+                elif nm_nbit > 1:
+                    text = p_mod_ + bf_name
+                    dwrite(f1, text + "_gm", bm, bc)
+                    dwrite(f1, text + "_bs" , nm_bits[0], "  bit shift")
+                else:
+                    tx = p_mod_ + rg_n_ + bf_name + "_bm"
+                    dwrite(f1, tx, bm, bc)
+                    pass
+                pass
+            pass
+        f1.write("\n")
+        pass
+    for name in vgrpl:
+        vgrp = vgrpd[name]
+        #if name == 'CLKCTRL_PDIV': pdb.set_trace()
+        shift = vgrp.attrib.get('shift', '0')
+        f1.write("typedef enum {\n")
+        for val in vgrp.xpath('value'):
+            attr = val.attrib
+            value = "(%s << %s)" % (attr['value'], shift)
+            ewrite(f1,0, "  %s_%s_gc = %s," % (name, attr['name'], value),
+                   attr['caption'])
+            pass
+        f1.write("} %s_t;\n" % name)
+        f1.write("\n")
+    for rgrp in rgrps:
+        if 'union-tag' in rgrp.attrib: continue
+        rg_n = rgrp.attrib["name"] + "_"
+        regl, regd = rgrp_sort(rgrp)
+        for rn in regl:
+            attr = regd[rn]
+            name = attr['name']
+            offs = attr['offset']
+            capn = attr['caption']
+            if attr['size'] == "2":
+                dwrite(f1, rg_n + name + "L_OFFSET", "(%s+0)" % offs, capn)
+                dwrite(f1, rg_n + name + "H_OFFSET", "(%s+1)" % offs, capn)
+            else:
+                dwrite(f1, rg_n + name + "_OFFSET", offs, capn)
+                pass
+        pass
+    f1.write("\n");
+
+    f1.write("uint8_t %s_rd(%s_t *%s, int addr) {\n" \
+             % (ml, ml, ml))
+    f1.write("  %s_reg_t *reg = %s->reg;\n" % (ml, ml))
+    f1.write("\n")
+    if ngrp > 1:
+        fwrite(f1,0, "  if (union-check) {")
+        ns = 2
+    else:
+        ns = 0
+    for ix in range(ngrp):
+        rgrp = rgrps[ix]
+        if 'union-tag' in rgrp.attrib: continue
+        rg_n = rgrp.attrib["name"]
+        if (ngrp > 1) and (ix > 0):
+            fwrite(f1, 0, "  } else if (union-check) {")
+        fwrite(f1, ns, "  switch (offs) {")
+        regl, regd = rgrp_sort(rgrp)
+        for rn in regl:
+            attr = regd[rn]
+            rgn_ = rg_n + '_' + attr['name'];
+            rgnx = rg_n + '.' + attr['name']
+            capn = attr['caption']
+            if attr['size'] == "2":
+                ewrite(f1, ns, "  case %sL_OFFSET:" % rgn_, capn)
+                print("need split.TEMP"); pdb.set_trace()
+                fwrite(f1, ns, "    reg->TEMP =  reg->%sH;" % rgnx)
+                fwrite(f1, ns, "    return reg->%sL;" % rgnx)
+                fwrite(f1, ns, "    break;")
+                ewrite(f1, ns, "  case %sH_OFFSET:" % rgn_, capn)
+                fwrite(f1, ns, "    return reg->TEMP;")
+                fwrite(f1, ns, "    break;")
+            else:
+                ewrite(f1, ns, "  case %s_OFFSET:" % rgn_, capn)
+                fwrite(f1, ns, "    return reg->%s;" % rgnx)
+                fwrite(f1, ns, "    break;")
+                pass
+            pass
+        pass
+        fwrite(f1, ns, "  default:")
+        fwrite(f1, ns, "    abort();")
+        fwrite(f1, ns, "    break;")
+        fwrite(f1, ns, "  }")
+    if ngrp > 1: fwrite(f1,0, "  }");
+    f1.write("}\n")
+    f1.write("\n")
+
+    f1.write("void %s_wr(%s_t *%s, int addr, uint8_t val) {\n" \
+             % (ml, ml, ml))
+    f1.write("  %s_reg_t *reg = %s->reg;\n" % (ml, ml))
+    f1.write("\n")
+    f1.write("  switch (offs) {\n")
+    if ngrp > 1:
+        fwrite(f1,0, "  if (union-check) {")
+        ns = 2
+    else:
+        ns = 0
+    for ix in range(ngrp):
+        rgrp = rgrps[ix]
+        if 'union-tag' in rgrp.attrib: continue
+        rg_n = rgrp.attrib["name"] + "_"
+        print("NEED TO REMOVE TCA_"); pdb.set_trace()
+        if (ngrp > 1) and (ix > 0):
+            fwrite(f1, 0, "  } else if (union-check) {")
+        fwrite(f1, ns, "  switch (offs) {")
+        regl, regd = rgrp_sort(rgrp)
+        for rn in regl:
+            attr = regd[rn]
+            rgn_ = rg_n + '_' + attr['name'];
+            rgnx = rg_n + '.' + attr['name']
+            capn = attr['caption']
+            if attr['size'] == "2":
+                ewrite(f1,ns, "  case %sL_OFFSET:" % rgn_, capn)
+                fwrite(f1,ns, "    reg->%sL = reg->TEMP = val;" % rgnx)
+                fwrite(f1,ns, "    break;")
+                ewrite(f1,ns, "  case %sH_OFFSET:" % rgn_, capn)
+                fwrite(f1,ns, "    reg->%sH = val;" % rgnx)
+                fwrite(f1,ns, "    reg->%sL = reg->TEMP;" % rgnx)
+                fwrite(f1,ns, "    break;")
+            else:
+                ewrite(f1,ns, "  case %s_OFFSET:" % rgn_, capn)
+                fwrite(f1,ns, "    reg->%s = val;" % rgnx)
+                fwrite(f1,ns, "    break;")
+                pass
+            pass
+        pass
+    fwrite(f1,ns, "  default:\n")
+    fwrite(f1,ns, "    abort();\n")
+    fwrite(f1,ns, "    break;\n")
+    fwrite(f1,ns, "  }\n")
+    if ngrp > 1: fwrite(f1,0, "  }");
+    fwrite(f1,0, "}\n")
+    f1.write("\n")
+    
+    f1.write("/* --- last line --- */\n")
+    f1.close()
+    pass
+    
+def main(argv):
+    opts = parser.parse_args(argv[1:])
+    get_module(opts.atdf, opts.module, opts)
+
+if __name__ == '__main__':
+    main(sys.argv)
+
+# --- last line ---

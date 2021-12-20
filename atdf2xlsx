@@ -35,7 +35,7 @@
 #      register-group name (e.g., "AC0") and name-in-module (e.g., "AC")
 #  modules - the other stuff
 #   module w/ name (e.g., "AC")
-#    register-group w/ name (e.g., "AC")
+#    register-group w/ name (e.g., "AC0")
 #     register w/ name (e.g., "CTRLA") w/ caption
 #      bitfield w/ name (e.g., "DATA") w/ caption
 #    value-group w/ name (e.g., "AC_HYSMODE") w/ caption
@@ -54,20 +54,6 @@ ol2_opts = { 'level': 2, 'hidden': True }
 wkbk = False
 om_f = False
 pl_f = False
-
-# =========================================
-
-import argparse
-
-parser = argparse.ArgumentParser()
-parser.add_argument("files", nargs="+")
-parser.add_argument("-X", "--no-excel", default=False,
-                    action="store_true", help="don't generate excel file")
-parser.add_argument("-g", "--org-mode", default=False,
-                    action="store_true", help="generate org-mode file")
-parser.add_argument("-p", "--plain-text", default=False,
-                    action="store_true", help="generate plain text file")
-parser.add_argument("-o", "--output", help="output basename (no extension)")
 
 # =========================================
 
@@ -113,11 +99,14 @@ def add_datasheet(atdfname):
     row = 1
 
     for mod in perifs:
+        m_name = mod.attrib['name']
         insts = mod.xpath("instance")
         rgrp = insts[0].find("register-group")
         if rgrp is None: continue # DA series does this
         p_prtn = rgrp.attrib["name"]
-        if len(insts) > 1: p_prtn = p_prtn[:-1] + 'n'
+
+        if len(insts) > 1:
+            p_prtn = p_prtn[:-1] + ('n' if p_prtn[:-1].isdigit() else 'a')
         # todo: if prtn[-1] == '0': 'n' elif == 'A": 'a' else: error
         p_prtx = p_prtn + "."
         p_prt_ = p_prtn + "_"
@@ -129,7 +118,8 @@ def add_datasheet(atdfname):
         if wksh: wksh.write_string(row, 0, p_prtn)
         row += 1
 
-        modl = modules.find("module[@name='%s']" % p_modn)
+        #modl = modules.find("module[@name='%s']" % p_modn)
+        modl = modules.find("module[@name='%s']" % m_name)
         rgrps = modl.xpath("register-group")
         vgrps = modl.xpath("value-group")
         #
@@ -139,6 +129,7 @@ def add_datasheet(atdfname):
             vgrpd[name] = vgrp
             pass
 
+        # generate a dictionary of register-groups
         # a bit kludgy here w/ the unions
         nrgrp = len(rgrps)
         rgrpd = {}
@@ -153,10 +144,12 @@ def add_datasheet(atdfname):
         #
         for rgrp in rgrps:
             if 'union-tag' in rgrp.attrib: continue
+            rg_name = rgrp.attrib["name"]
             if nrgrp > 1:
-                rg_name = rgrp.attrib["name"] 
-                rg_nx = rgrpd[rg_name].attrib['name'] + "."
-                rg_n_ = rgrpd[rg_name].attrib['name'] + "_"
+                #rg_nx = rgrpd[rg_name].attrib['name'] + "."
+                #rg_n_ = rgrpd[rg_name].attrib['name'] + "_"
+                rg_nx = rg_name + "."
+                rg_n_ = rg_name + "_"
             else:
                 rg_nx = ""
                 rg_n_ = ""
@@ -164,7 +157,7 @@ def add_datasheet(atdfname):
             for reg in rgrp:
                 vgrp = reg.find("value-group")
                 r_name = reg.attrib["name"]
-                r_capt = reg.attrib["caption"]
+                r_capt = reg.attrib.get("caption", "")
 
                 text = p_prtx + rg_nx + r_name
                 if om_f: om_f.write("*** %s: %s\n" % (text, r_capt))
@@ -178,13 +171,13 @@ def add_datasheet(atdfname):
                 bitfields = reg.xpath("bitfield")
                 for bf in bitfields:
                     bf_name = bf.attrib["name"]
-                    bf_capt = bf.attrib["caption"]
+                    bf_capt = bf.attrib.get("caption", "")
                     bf_mask = bf.attrib["mask"]
                     nm_bits = mask_bits(bf_mask)
                     key = p_mod_ + rg_n_ + bf_name
                     if key in vgrpd:
                         text = key
-                        capt = vgrpd[key].attrib["caption"]
+                        capt = vgrpd[key].attrib.get("caption", "")
                         if om_f: om_f.write("**** %-29s  %s\n" % (text, bf_capt))
                         if pl_f: pl_f.write("     %-29s  %s\n" % (text, bf_capt))
                         if wksh:
@@ -194,7 +187,7 @@ def add_datasheet(atdfname):
                         row += 1
                         for val in vgrpd[key]:
                             n = val.attrib["name"]
-                            ct = val.attrib["caption"]
+                            ct = val.attrib.get("caption", "")
                             tx = key + "_" + n + "_gc"
                             if om_f: om_f.write("     %-28s   %s\n" % (tx, ct))
                             if pl_f: pl_f.write("     %-28s   %s\n" % (tx, ct))
@@ -263,8 +256,22 @@ def add_datasheet(atdfname):
 
         pass
 
+# =========================================
+
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("files", nargs="+")
+parser.add_argument("-X", "--no-excel", default=False,
+                    action="store_true", help="don't generate excel file")
+parser.add_argument("-g", "--org-mode", default=False,
+                    action="store_true", help="generate org-mode file")
+parser.add_argument("-p", "--plain-text", default=False,
+                    action="store_true", help="generate plain text file")
+parser.add_argument("-o", "--output", help="output basename (no extension)")
+
 def main(args):
-    global om_f, pl_f
+    global om_f, pl_f, wkbk
 
     atdfname = os.path.basename(args.files[0])
     outfbase,ext = os.path.splitext(atdfname)

@@ -7,7 +7,7 @@
 #   $ ./atdf2xlsx ATmega4809.atdf  
 # generates ATmega4809.xlsx
 #
-# v220614a
+# v220614b
 
 # Copyright (C) 2020-2022 Matthew R. Wette
 
@@ -106,8 +106,7 @@ def add_datasheet(atdfname):
         p_prtn = rgrp.attrib["name"]
 
         if len(insts) > 1:
-            p_prtn = p_prtn[:-1] + ('n' if p_prtn[:-1].isdigit() else 'a')
-        # todo: if prtn[-1] == '0': 'n' elif == 'A": 'a' else: error
+            p_prtn = p_prtn[:-1] + ('n' if p_prtn[-1].isdigit() else 'a')
         p_prtx = p_prtn + "."
         p_prt_ = p_prtn + "_"
         p_modn = rgrp.attrib["name-in-module"]
